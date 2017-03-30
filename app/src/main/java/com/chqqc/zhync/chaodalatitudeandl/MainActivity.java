@@ -4,6 +4,7 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.location.Criteria;
@@ -14,10 +15,12 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
+import android.provider.Settings;
 import android.support.annotation.NonNull;
 import android.support.design.widget.FloatingActionButton;
 import android.support.design.widget.Snackbar;
 import android.support.v4.app.ActivityCompat;
+import android.support.v7.app.AlertDialog;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.util.Log;
@@ -38,14 +41,22 @@ import com.baidu.location.LocationClient;
 import com.baidu.location.LocationClientOption;
 import com.baidu.location.BDNotifyListener;//假如用到位置提醒功能，需要import该类
 import com.baidu.location.Poi;
+import com.chqqc.zhync.chaodalatitudeandl.entity.LocaInfo;
+import com.chqqc.zhync.chaodalatitudeandl.handle.MainHandler;
 
 import org.json.JSONObject;
 
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.Timer;
 import java.util.TimerTask;
+
+import io.realm.Realm;
+import io.realm.RealmConfiguration;
+import io.realm.RealmList;
+import io.realm.RealmResults;
 
 public class MainActivity extends AppCompatActivity implements View.OnClickListener {
     private final int SDK_PERMISSION_REQUEST = 127;
@@ -57,14 +68,17 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     public BDLocationListener myListener = new MyLocationListener();
     private  int randomNum;
     private String permissionInfo;
+    private Realm realm;
+    private RealmConfiguration realmConfig;
     @SuppressLint("NewApi")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         randomNum = 0;
         initRandom();
-
         setContentView(R.layout.activity_main);
+
+        initRealm();
         mWebView = (WebView) findViewById(R.id.webview);
         // 启用javascript
         WebSettings webSettings = mWebView.getSettings();
@@ -102,14 +116,36 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         getPersimmions();
         initEvent();
 
-        iniJs();
-
         initLocation();
         LocationManager locManager = (LocationManager)getSystemService(Context.LOCATION_SERVICE);
 
         if(!locManager.isProviderEnabled(LocationManager.GPS_PROVIDER)){
 
             // 未打开位置开关，可能导致定位失败或定位不准，提示用户或做相应处理
+
+            AlertDialog.Builder dialog = new AlertDialog.Builder(this);
+            dialog.setMessage("请打开GPS");
+            dialog.setPositiveButton("确定",
+                    new android.content.DialogInterface.OnClickListener() {
+
+                        @Override
+                        public void onClick(DialogInterface arg0, int arg1) {
+
+                            // 转到手机设置界面，用户设置GPS
+                            Intent intent = new Intent(
+                                    Settings.ACTION_LOCATION_SOURCE_SETTINGS);
+                            startActivityForResult(intent, 0); // 设置完成后返回到原来的界面
+
+                        }
+                    });
+            dialog.setNeutralButton("取消", new android.content.DialogInterface.OnClickListener() {
+
+                @Override
+                public void onClick(DialogInterface arg0, int arg1) {
+                    arg0.dismiss();
+                }
+            } );
+            dialog.show();
         }
 
 
@@ -117,6 +153,24 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         //timer.schedule(task, 1000, 2000); // 1s后执行task,经过1s再次执行
 
     }
+
+    /**
+     * 初始化Realm
+     */
+    private void initRealm() {
+        byte[] key = new byte[64];
+        new SecureRandom().nextBytes(key);
+        RealmConfiguration realmConfiguration = new RealmConfiguration.Builder()
+                .encryptionKey(key)
+                .build();
+
+        // Start with a clean slate every time
+        Realm.deleteRealm(realmConfiguration);
+
+        // Open the Realm with encryption enabled
+        realm = Realm.getInstance(realmConfiguration);
+    }
+
 
     @TargetApi(23)
     private void getPersimmions() {
@@ -179,7 +233,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
            public void handleMessage(Message msg) {
                if (msg.what == 1) {
                    //tvShow.setText(Integer.toString(i++));
-                   setLocationServiceState(true);
+                   mLocationClient.start();
                }
                super.handleMessage(msg);
            };
@@ -255,10 +309,6 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
     }
 
-    private void iniJs() {
-
-    }
-
     private void initEvent() {
         fab.setOnClickListener(this);
     }
@@ -268,38 +318,32 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
      * 显示地理位置经度和纬度信息
      * @param location
      */
-    private void showLocation(BDLocation location) {
+    private void showLocation(final BDLocation location) {
         String locationStr = "维度：" + location.getLatitude() + "\n"
                 + "经度：" + location.getLongitude();
-        System.out.println(locationStr);
+
         latitude.setText(location.getLatitude() + "");
         longitude.setText(location.getLongitude() + "");
         speed.setText(location.getSpeed()+"");
         area.setText(location.getAddrStr());
-    }
+        MainHandler.getInstance().post(new Runnable() {
+            @Override
+            public void run() {
+                realm.executeTransaction(new Realm.Transaction() {
+                    @Override
+                    public void execute(Realm realm) {
+                        LocaInfo locaInfo = realm.createObject(LocaInfo.class);
+                        locaInfo.setLongitude(location.getLongitude()+"");
+                        locaInfo.setLatitude(location.getLatitude()+"");
 
-//    @Override
-//    public void onPermissionsGranted(int requestCode, List<String> perms) {
-//        mLocationClient.start();
-//    }
-//
-//    @Override
-//    public void onPermissionsDenied(int requestCode, List<String> perms) {
-//        if (EasyPermissions.somePermissionPermanentlyDenied(this, perms)) {
-//            EasyPermissions.onPermissionsPermanentlyDenied(this,
-//                    getString(R.string.rationale),
-//                    getString(R.string.rationale_title),
-//                    getString(android.R.string.ok),
-//                    getString(android.R.string.cancel),
-//                    125);
-//        }
-//    }
-//
-//    @Override
-//    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-//        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-//        EasyPermissions.onRequestPermissionsResult(requestCode, permissions, grantResults, this);
-//    }
+                        Toast.makeText(MainActivity.this, "数据插入成功", Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        });
+
+
+    }
 
     public  class MyLocationListener implements BDLocationListener {
 
@@ -310,28 +354,18 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             if (location != null && (location.getLocType() != BDLocation.TypeServerError &&
                     location.getLocType() != BDLocation.TypeOffLineLocationFail &&
                     location.getLocType() != BDLocation.TypeOffLineLocationNetworkFail)) {
-//                model.setUserLatitude(location.getLatitude());
-//                model.setUserLongitude(location.getLongitude());
-//                model.getCustomerInfo().setCusAreaName(location.getDistrict());
+
                 showLocation(location);
 
             } else {
                 Toast.makeText(MainActivity.this, "定位失败", Toast.LENGTH_SHORT).show();
             }
 
-            mLocationClient.stop();
+            //mLocationClient.stop();
 
         }
 
 
-    }
-
-    public void setLocationServiceState(boolean open) {
-        if (open) {
-            mLocationClient.start();
-        } else {
-            mLocationClient.stop();
-        }
     }
 
 
@@ -344,9 +378,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-        // Handle action bar item clicks here. The action bar will
-        // automatically handle clicks on the Home/Up button, so long
-        // as you specify a parent activity in AndroidManifest.xml.
+
         int id = item.getItemId();
 
         //noinspection SimplifiableIfStatement
@@ -364,7 +396,12 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 //                Snackbar.make(view, "Replace with your own action", Snackbar.LENGTH_LONG)
 //                        .setAction("Action", null).show();
                 //mWebView.loadUrl("javascript:window.location.href=\"http://www.foodmall.com\"");
-                mWebView.loadUrl("javascript:window.alert('jj')");
+                //mWebView.loadUrl("javascript:window.alert('jj')");
+                //List<LocaInfo> loca = realm.where(LocaInfo.class).findAll();
+                ///LocaInfo info = realm.where(LocaInfo.class).findFirst();
+                RealmResults<LocaInfo> results = realm.where(LocaInfo.class).beginsWith("longitude","LocaInfo").findAll();
+
+
                 break;
             default:
                 break;
@@ -385,8 +422,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-
-                    setLocationServiceState(true);
+                    mLocationClient.start();
                     String jsonStr = "{'lat':'"+latitude.getText()+"','lng':'"+longitude.getText()+"'}";
                     String jsFunc = "javascript:getLocalLatituAndLongitude("+jsonStr+")";
                     //String jsFunc = "javascript:show()";
@@ -407,6 +443,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         //在activity执行onDestroy时执行mMapView.onDestroy()，实现地图生命周期管理
         //关闭定位
         mLocationClient.stop();
+        realm.close();
 
     }
 }
